@@ -1,0 +1,2 @@
+# GlaDOS_checkin
+使用js脚本进行GLaDOS机场签到，可挂签到狗或Autojs
