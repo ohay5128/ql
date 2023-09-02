@@ -1,5 +1,19 @@
-# GLaDOS_checkin
-使用js脚本进行GLaDOS机场签到，可挂签到狗或Autojs
+# QL_checkin
+自用青龙脚本
 
-## GlaDOS注册
-注册[GLaDOS](https://glados.rocks/)(注册地址在 https://github.com/glados-network/GLaDOS 实时更新), 并输入邀请码:`N3CMR-9H4SV-RE0Z6-LE1RZ` 激活
+
+
+
+### 青龙
+
+## 变量录入
+[地址](http://zql5627710.asuscomm.com:5802/)
+
+#### 签到
+
+[qd平台](http://zql5627710.asuscomm.com:5803/)这我自己搭建签到网站站，可以直接注册账号进行相关网页签到
+
+### 特别声明:
+
+本仓库发布的项目中涉及的任何解锁和解密分析脚本，仅用于测试和学习研究，禁止用于商业用途，不能保证其准确性，完整性和有效性，请根据情况自行判断。
+
