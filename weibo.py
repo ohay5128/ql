@@ -1,106 +1,199 @@
-# 更新日期：2023.4.13
-# 版本：1.0
 import json
+import pprint
 import requests
 import re
-import time
-import random
 import os
-# 在脚本开始时等待 0 到 3600 秒 (0 到# 1 小时)
-sleep_time = random.randint(5,60)
-time.sleep(sleep_time)
+import random
+import time
+from urllib.parse import urlparse, parse_qs
+from notify import send
 
-weibo_cookie=os.getenv("weibo_cookie")
-weibo_cookies = weibo_cookie.split('&')
-weibo_chaohua_id = os.getenv("weibo_chaohua_id")
-super_topic_active_ids = weibo_chaohua_id.split('&')
+# 定义常量
+API_URL = "https://api.weibo.cn/2/cardlist"
+SIGN_URL = "https://api.weibo.cn/2/page/button"
 
-# 配置 headers 和 cookies
-user_agents = [
-    "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/86.0.4240.198 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/111.0.0.0 Safari/537.36 Edg/111.0.1661.54"
-]
 
-# 这里是选择Server酱的推送方式，填写Sendkey，不想使用的话直接忽略
-#SCKEY = 'SCT11080TKytAWNgus1dau3OtCGiOy56W'
-SCKEY = ''
-# 推送PLUS的token
-Token = 'f149797c8f0b47e09716489133c3a383'
+# 请求接口
+def send_request(url, params, headers):
+    max_retries = 15  # 设置最大尝试次数
+    wait_time = 5  # 设置每次尝试之间的等待时间（秒）
+    response = requests.get(url, params=params, headers=headers)
+    for i in range(max_retries):
+        try:
+            if 200 <= response.status_code < 300:
+                # 请求成功，退出循环
+                break
+            else:
+                # 如果服务器响应不是2xx，我们也认为是请求失败
+                raise requests.RequestException(f"HTTP Error: {response.status_code}")
+        except requests.RequestException as e:
+            if i < max_retries - 1:
+                print(f"请求失败，原因: {e}。{wait_time}秒后重试...")
+                time.sleep(wait_time)
+                continue
+            else:
+                raise
 
-def push(content):
-    print(content)
-    if SCKEY != '':
-        url = "https://sctapi.ftqq.com/{}.send?title={}&desp={}".format(SCKEY, '微博超话签到', content)
-        requests.post(url)
-        print('推送完成')
-    elif Token != '':
-        headers = {'Content-Type': 'application/json'}
-        json = {"token": Token, 'title': '微博超话签到', 'content': content, "template": "json"}
-        resp = requests.post(f'http://www.pushplus.plus/send', json=json, headers=headers).json()
-        print('push+推送成功' if resp['code'] == 200 else 'push+推送失败')
+    data = json.loads(response.text)
+
+    return data
+
+
+# 提取cookie中的gsid
+def generate_authorization(cookie):
+    gsid = cookie.get("gsid")
+    if gsid is not None:
+        return f"WB-SUT {gsid}"
     else:
-        print('未使用消息推送推送！')
+        return None
 
 
-def random_wait(min_wait=5, max_wait=20):
-    wait_time = random.randint(min_wait, max_wait)
-    time.sleep(wait_time)
+def extract_params(url):
+    # 解析URL
+    parsed_url = urlparse(url)
 
-def check_in(cookies, active_id):
-    global content
-    header = {'cookie': cookies,
-        "User-Agent": random.choice(user_agents),
-        "Referer": "https://weibo.com/"}
-    header["User-Agent"] = random.choice(user_agents)
-    url = 'https://weibo.com/p/{}/super_index'.format(active_id)
-    session = requests.Session()
-    random_wait()
-    #response = session.get(url, headers=header)
-    #print(f"找到 active_id: {active_id}")
-    # 在这里处理 active_id
-    checkin_url = f"https://weibo.com/p/aj/general/button?id={active_id}&api=http://i.huati.weibo.com/aj/super/checkin"
-    checkin_response = session.get(checkin_url, headers=header)
-    # 获取超话社区名字
-    html_info = requests.get(url=url, headers=header).text
-    info = "".join(re.findall('<title>(.*?)</title>', html_info, re.S))
-    info = info.replace('—新浪微博超话社区', '')
-    checkin_result = json.loads(checkin_response.text)
-    #print(checkin_result)
-    content = content +  info + '   ' + checkin_result['msg'] + '\n'
+    # 提取查询参数
+    params_from_cookie = parse_qs(parsed_url.query)
+
+    # 将列表值转换为单个值
+    params_from_cookie = {k: v[0] for k, v in params_from_cookie.items()}
+
+    return params_from_cookie
+
+
+# 获取get_since_id
+def get_since_id(params, headers):
+    data = send_request(API_URL, params, headers)
+    since_id = data["cardlistInfo"]["since_id"]
+    return since_id
+
+
+# 获取超话列表
+def get_topics(params, headers):
+    data = send_request(API_URL, params, headers)
+    cards = data.get("cards", [])
+    topics = []
+    for card in cards:
+        if card.get("card_type") == "11":
+            card_group = card.get("card_group", [])
+            for item in card_group:
+                if item.get("card_type") == "8":
+                    sign_action = None
+                    if "buttons" in item and len(item["buttons"]) > 0:
+                        button = item["buttons"][0]
+                        if "params" in button and "action" in button["params"]:
+                            sign_action = button["params"]["action"]
+
+                    topic = {
+                        "title": item.get("title_sub"),
+                        "desc": item.get("desc1"),
+                        "sign_status": item.get("buttons", [{}])[0].get("name", ""),
+                        "sign_action": sign_action
+                        if item.get("buttons", [{}])[0].get("name", "") != "已签"
+                        else "",
+                    }
+
+                    topics.append(topic)
+    output = ""
+    for topic in topics:
+        output += "超话标题:'{}'，状态:'{}'\n".format(topic["title"], topic["sign_status"])
+
+    print(output)
+    return topics
+
+
+# 超话签到
+def sign_topic(title, action, params, headers):
+    message = ""
+    action = re.search(r"request_url=(.+)", action).group(1)
+    params["request_url"] = action
+    time.sleep(random.randint(5, 10))  # 暂停执行wait_time秒
+    resp = requests.get(SIGN_URL, params=params, headers=headers)
+    # print('服务器返回信息:', resp.json())
+    if resp.json().get("msg") == "已签到":
+        qd_output = "超话标题:'{}'，状态:'签到成功！'\n".format(title)
+        print(qd_output)
+        message += qd_output
+
+    else:
+        print("签到失败!")
+
+    return message
+
+
+def get_username(params, headers):
+    url = 'https://api.weibo.cn/2/profile/me'
+    response = requests.get(url, headers=headers, params=params)
+    data = json.loads(response.text)
+    return data['mineinfo']['screen_name']
+
+
+headers = {
+    "Accept": "*/*",
+    "User-Agent": "Weibo/81434 (iPhone; iOS 17.0; Scale/3.00)",
+    "SNRT": "normal",
+    "X-Sessionid": "6AFD786D-9CFA-4E18-BD76-60D349FA8CA2",
+    "Accept-Encoding": "gzip, deflate",
+    "X-Validator": "QTDSOvGXzA4i8qLXMKcdkqPsamS5Ax1wCJ42jfIPrNA=",
+    "Host": "api.weibo.cn",
+    "x-engine-type": "cronet-98.0.4758.87",
+    "Connection": "keep-alive",
+    "Accept-Language": "en-US,en",
+    "cronet_rid": "6524001",
+    "Authorization": "",
+    "X-Log-Uid": "5036635027",
+}
 
 if __name__ == "__main__":
-    print("开始运行微博超话签到程序...")
-    
-    random.shuffle(weibo_cookies)  # 随机化签到顺序
-    content = ''
-    for cookies in weibo_cookies:
-        random_wait()
+    succeeded = False
+    # 获取参数
+    # weibo_my_cookie = ''
+    params = extract_params(os.getenv("weibo_my_cookie"))
+    # params = extract_params(weibo_my_cookie)
+    message_to_push = ""
+    while not succeeded:
         try:
-            random.shuffle(super_topic_active_ids)  # 随机化签到顺序
-            for active_id in super_topic_active_ids:
-                check_in(cookies, active_id)
-                random_wait()  # 在签到之间添加随机等待时间
 
-            header = {'cookie': cookies,
-                      "User-Agent": random.choice(user_agents),
-                      "Referer": "https://weibo.com/"}
-            header["User-Agent"] = random.choice(user_agents)
-            response1 = requests.get("https://security.weibo.com/account/security", headers=header).text
-            response2 = "".join(re.findall('<p class="page S_txt2">(.*?)</p>', response1, re.S))
-            response2 = response2.replace('<p class="page S_txt2">', '')
-            response2 = response2.replace('</p>', '')
-            response2 = response2.replace('&nbsp;1ä¸ªæªå¼å¯&nbsp;', '')
-            random_wait()
-            response1 = requests.get("https://account.weibo.com/set/index", headers=header).text
-            response3 = "".join(re.findall("'nick':'(.*?)',", response1, re.S))
-            response3 = response3.replace(':', '')
-            response3 = response3.replace("'nick''", '')
-            response3 = response3.replace("',", '')
-            content = content + "登录名:{}，昵称:{}  完成超话签到。\n\n".format(response2,response3)
+            # 获取用户名
+            name = get_username(params, headers)
+            print('用户名:', name + '\n')
+            since_id = get_since_id(params, headers)
+            params["count"] = "1000"
+            # 更新header参数
+            headers["Authorization"] = generate_authorization(params)
 
+            # 外部循环，用于重新获取并处理主题，直到所有主题的 sign_action 都为空
+            while True:
+                # 重置 output 为空字符串
+                output = ""
+                # 假设您有一个函数 get_topics 来获取主题列表
+                topics = get_topics(params, headers)
+                # 检查是否存在 sign_action 不为空的主题
+                has_sign_action = any(
+                    topic.get("sign_action") != "" for topic in topics
+                )
+                # 如果没有 sign_action 不为空的主题，则退出外部循环
+                if not has_sign_action:
+                    break
+                # 原始的外部循环，用于格式化输出
+                for topic in topics:
+                    output += "超话标题:'{}'，状态:'{}'\\n".format(
+                        topic["title"], topic["sign_status"]
+                    )
+                # 原始的内部循环，用于检查和处理 sign_action
+                for topic in topics:
+                    if topic.get("sign_action") != "":
+                        action = topic.get("sign_action")
+                        title = topic.get("title")
+                        message = sign_topic(title, action, params, headers)
+                        message_to_push += message  # 将每个主题的消息追加到最终要推送的消息中
 
-        except:
-            content =content + '签到失败，可能是cookie失效,请及时更新cookie。\n\n'
+                # print(output)
 
-    push(content)
-print("已完成签到.")
+            succeeded = True
+        except Exception as e:
+            print(e)
+            time.sleep(60)
+
+    # print('message:', message)
+    send("微博签到结果:", message_to_push)
